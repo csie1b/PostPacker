@@ -233,6 +233,44 @@ class MainViewModel : ViewModel() {
         }
     }
 
+    fun openZipFile(context: Context, zipFile: File) {
+        if (!zipFile.exists()) {
+            viewModelScope.launch {
+                _toastEvent.emit("⚠️ 找不到檔案，可能已被移動或刪除")
+            }
+            return
+        }
+        try {
+            val authority = "${context.packageName}.fileprovider"
+            val uri: Uri = FileProvider.getUriForFile(context, authority, zipFile)
+
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/zip")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            val chooser = Intent.createChooser(intent, "開啟 ZIP 壓縮檔")
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(chooser)
+        } catch (e: Exception) {
+            try {
+                val authority = "${context.packageName}.fileprovider"
+                val uri: Uri = FileProvider.getUriForFile(context, authority, zipFile)
+                val genericIntent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, "*/*")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                genericIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(Intent.createChooser(genericIntent, "開啟檔案"))
+            } catch (err: Exception) {
+                viewModelScope.launch {
+                    _toastEvent.emit("無法開啟：請確認手機有安裝解壓縮或檔案總管應用程式")
+                }
+            }
+        }
+    }
+
     fun openBrowserHelper() {
         val currentInput = _urlInput.value.trim()
         val url = if (currentInput.isNotBlank() && PostExtractorFacade.findFirstUrl(currentInput) != null) {

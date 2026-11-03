@@ -1,5 +1,6 @@
 package com.postpacker.app.ui.screens
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,6 +17,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.Share
@@ -24,6 +26,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -63,7 +66,7 @@ fun HistoryScreen(
             color = MaterialTheme.colorScheme.primary
         )
         Text(
-            text = "已打包儲存於本機的 ZIP 備份 (${historyList.size})",
+            text = "已打包儲存於本機的 ZIP 備份 (${historyList.size}) · 點擊項目或按鈕可直接開啟",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -105,6 +108,7 @@ fun HistoryScreen(
                 items(historyList, key = { it.zipFile.absolutePath }) { item ->
                     HistoryItemCard(
                         archive = item,
+                        onOpen = { viewModel.openZipFile(context, item.zipFile) },
                         onShare = { viewModel.shareZipFile(context, item.zipFile) },
                         onDelete = { viewModel.deleteHistoryItem(context, item) }
                     )
@@ -117,6 +121,7 @@ fun HistoryScreen(
 @Composable
 private fun HistoryItemCard(
     archive: PackagedArchive,
+    onOpen: () -> Unit,
     onShare: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -133,7 +138,9 @@ private fun HistoryItemCard(
     Card(
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onOpen() }
     ) {
         Row(
             modifier = Modifier.padding(14.dp),
@@ -180,21 +187,52 @@ private fun HistoryItemCard(
                 )
             }
 
-            Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.width(6.dp))
 
-            // Action: Share ZIP
-            FilledTonalIconButton(onClick = onShare) {
-                Icon(Icons.Default.Share, contentDescription = "Share", modifier = Modifier.size(18.dp))
-            }
+            // Action Buttons Row
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // Action: Open ZIP
+                FilledTonalIconButton(
+                    onClick = onOpen,
+                    colors = IconButtonDefaults.filledTonalIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    ),
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.FolderOpen,
+                        contentDescription = "開啟 ZIP 檔案",
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
 
-            // Action: Delete
-            IconButton(onClick = onDelete) {
-                Icon(
-                    Icons.Default.Delete,
-                    contentDescription = "Delete",
-                    tint = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.size(20.dp)
-                )
+                Spacer(modifier = Modifier.width(4.dp))
+
+                // Action: Share ZIP
+                IconButton(
+                    onClick = onShare,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Share,
+                        contentDescription = "分享",
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
+                // Action: Delete
+                IconButton(
+                    onClick = onDelete,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "刪除",
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
         }
     }
