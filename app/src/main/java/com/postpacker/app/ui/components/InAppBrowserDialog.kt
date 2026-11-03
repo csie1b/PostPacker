@@ -133,6 +133,26 @@ fun InAppBrowserDialog(
                     )
                 }
 
+                // Helpful tip banner for login pages
+                if (currentUrl.contains("instagram.com/accounts/login")) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "💡 提示：若您的 IG 與 FB 有綁定，可點擊頁面上的「以 Facebook 帳號登入」；若未綁定，請輸入 IG 帳密登入一次，App 就會永久記住憑證！",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                lineHeight = 15.sp
+                            )
+                        }
+                    }
+                }
+
                 // WebView
                 Box(modifier = Modifier.weight(1f)) {
                     AndroidView(
