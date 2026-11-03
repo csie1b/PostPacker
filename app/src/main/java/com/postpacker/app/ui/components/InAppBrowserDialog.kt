@@ -257,6 +257,33 @@ private fun injectExtractionScript(webView: WebView?, onExtracted: (PostData) ->
         (function() {
             var mediaUrls = [];
             var mediaTypes = [];
+
+            // Helper to clean escaped URLs
+            var cleanUrl = function(u) {
+                if (!u) return "";
+                return u.replace(/\\\\\\//g, '/').replace(/\\\//g, '/').replace(/\\\\u0026/g, '&').replace(/\\u0026/g, '&');
+            };
+
+            // 0. Scan for Instagram Carousel sidecar in HTML/scripts
+            try {
+                var htmlStr = document.documentElement.innerHTML;
+                var sidecarIdx = htmlStr.indexOf('edge_sidecar_to_children');
+                if (sidecarIdx !== -1) {
+                    var chunk = htmlStr.substring(sidecarIdx, sidecarIdx + 300000);
+                    var nodeParts = chunk.split(/\\?["']node\\?["']\s*:\s*\{/);
+                    for (var i = 1; i < nodeParts.length; i++) {
+                        var part = nodeParts[i];
+                        var isVid = /\\?["']is_video\\?["']\s*:\s*true/.test(part);
+                        var dMatch = part.match(/\\?["']display_url\\?["']\s*:\s*\\?["']((?:\\\\.|[^"'\\])+)\\?["']/);
+                        var vMatch = part.match(/\\?["']video_url\\?["']\s*:\s*\\?["']((?:\\\\.|[^"'\\])+)\\?["']/);
+                        var finalU = (isVid && vMatch) ? cleanUrl(vMatch[1]) : (dMatch ? cleanUrl(dMatch[1]) : null);
+                        if (finalU && !mediaUrls.includes(finalU)) {
+                            mediaUrls.push(finalU);
+                            mediaTypes.push(isVid && vMatch ? 'video' : 'image');
+                        }
+                    }
+                }
+            } catch (err) {}
             
             // 1. Scan videos
             var videos = document.querySelectorAll('video');

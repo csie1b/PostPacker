@@ -13,6 +13,7 @@ import org.jsoup.Jsoup
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.regex.Matcher
 import java.util.regex.Pattern
 
 class InstagramExtractor(private val client: OkHttpClient) {
@@ -22,10 +23,135 @@ class InstagramExtractor(private val client: OkHttpClient) {
     suspend fun extract(rawUrl: String, cookieHeader: String? = null): Result<PostData> = withContext(Dispatchers.IO) {
         try {
             val cleanUrl = normalizeInstagramUrl(rawUrl)
-            val postId = extractPostId(cleanUrl) ?: "ig_${System.currentTimeMillis()}"
+            val postId = extractPostId(cleanUrl) ?: extractPostId(rawUrl) ?: "ig_${System.currentTimeMillis()}"
 
+            var finalAuthor = "Instagram User"
+            var finalCaption = ""
+            var finalAvatar: String? = null
+            var finalDate = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
+            val finalMediaList = mutableListOf<PostMedia>()
+
+            // 1. Fetch Instagram embed endpoint
+            // Instagram embed pages render server-side JSON with complete edge_sidecar_to_children (all carousel photos & videos) without requiring cookies/login!
+            val embedUrl = "https://www.instagram.com/p/$postId/embed/captioned/"
+            val embedHtml = fetchHtml(embedUrl, null)
+
+            if (!embedHtml.isNullOrBlank()) {
+                val embedMedia = extractAllMediaFromHtml(embedHtml)
+                if (embedMedia.isNotEmpty()) {
+                    finalMediaList.addAll(embedMedia)
+                }
+
+                val (embedAuthor, embedCaption, embedAvatar) = extractMetadataFromEmbed(embedHtml)
+                if (!embedAuthor.isNullOrBlank()) finalAuthor = embedAuthor
+                if (!embedCaption.isNullOrBlank()) finalCaption = embedCaption
+                if (!embedAvatar.isNullOrBlank()) finalAvatar = embedAvatar
+            }
+
+            // 2. Fetch direct post page to enrich metadata (e.g. published timestamp) or handle private posts
+            val directHtml = fetchHtml(cleanUrl, cookieHeader)
+            if (!directHtml.isNullOrBlank()) {
+                val doc = Jsoup.parse(directHtml)
+
+                // Try structured ld+json for publication date and fallback metadata
+                val ldJsonData = extractLdJson(directHtml, cleanUrl, postId)
+                if (ldJsonData != null) {
+                    if (finalAuthor == "Instagram User" && ldJsonData.author.isNotBlank()) {
+                        finalAuthor = ldJsonData.author
+                    }
+                    if (finalCaption.isBlank() && ldJsonData.caption.isNotBlank()) {
+                        finalCaption = ldJsonData.caption
+                    }
+                    if (ldJsonData.publishedAt.isNotBlank()) {
+                        finalDate = ldJsonData.publishedAt
+                    }
+                    if (finalMediaList.isEmpty() && ldJsonData.mediaList.isNotEmpty()) {
+                        finalMediaList.addAll(ldJsonData.mediaList)
+                    }
+                }
+
+                // Check OpenGraph metadata
+                val ogTitle = doc.select("meta[property=og:title]").attr("content")
+                val ogDesc = doc.select("meta[property=og:description]").attr("content")
+                val ogImage = doc.select("meta[property=og:image]").attr("content")
+                val ogVideo = doc.select("meta[property=og:video]").attr("content")
+
+                if (finalAuthor == "Instagram User" && ogTitle.isNotBlank()) {
+                    val authorMatch = Pattern.compile("^(.*?)(?:\\s*\\(@[\\w.]+\\))?\\s*on Instagram").matcher(ogTitle)
+                    if (authorMatch.find()) {
+                        finalAuthor = authorMatch.group(1)?.trim() ?: finalAuthor
+                    }
+                }
+
+                if (finalCaption.isBlank() && ogDesc.isNotBlank()) {
+                    var cap = ogDesc
+                    if (cap.contains("on Instagram:")) {
+                        cap = cap.substringAfter("on Instagram:").trim()
+                        if (cap.startsWith("\"") && cap.endsWith("\"") && cap.length > 2) {
+                            cap = cap.substring(1, cap.length - 1)
+                        }
+                    }
+                    finalCaption = cap
+                }
+
+                // If direct HTML contains sidecar (e.g. logged-in user viewing private carousel)
+                val directMedia = extractAllMediaFromHtml(directHtml)
+                if (directMedia.size > finalMediaList.size) {
+                    finalMediaList.clear()
+                    finalMediaList.addAll(directMedia)
+                } else if (finalMediaList.isEmpty()) {
+                    if (ogVideo.isNotBlank()) {
+                        finalMediaList.add(
+                            PostMedia(
+                                url = ogVideo,
+                                type = MediaType.VIDEO,
+                                thumbnailUrl = ogImage.ifBlank { null },
+                                suggestedFileName = "ig_video_01.mp4"
+                            )
+                        )
+                    } else if (ogImage.isNotBlank()) {
+                        finalMediaList.add(
+                            PostMedia(
+                                url = ogImage,
+                                type = MediaType.IMAGE,
+                                thumbnailUrl = ogImage,
+                                suggestedFileName = "ig_image_01.jpg"
+                            )
+                        )
+                    }
+                }
+            }
+
+            if (finalMediaList.isEmpty()) {
+                return@withContext Result.failure(
+                    Exception("Instagram 貼文受隱私權限保護或需要登入驗證。請點擊「網頁瀏覽器輔助擷取」登入後重試。")
+                )
+            }
+
+            val hashtags = extractHashtags(finalCaption)
+
+            val post = PostData(
+                id = postId,
+                platform = Platform.INSTAGRAM,
+                originalUrl = cleanUrl,
+                author = finalAuthor,
+                authorAvatarUrl = finalAvatar,
+                caption = finalCaption,
+                publishedAt = finalDate,
+                mediaList = finalMediaList,
+                hashtags = hashtags
+            )
+
+            Result.success(post)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private fun fetchHtml(url: String, cookieHeader: String?): String? {
+        return try {
             val requestBuilder = Request.Builder()
-                .url(cleanUrl)
+                .url(url)
                 .header("User-Agent", userAgent)
                 .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
                 .header("Accept-Language", "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7")
@@ -38,103 +164,169 @@ class InstagramExtractor(private val client: OkHttpClient) {
             }
 
             val response = client.newCall(requestBuilder.build()).execute()
-            if (!response.isSuccessful) {
-                return@withContext Result.failure(Exception("HTTP Error: ${response.code}"))
+            if (response.isSuccessful) {
+                response.body?.string()
+            } else {
+                null
             }
-
-            val html = response.body?.string() ?: return@withContext Result.failure(Exception("Empty response body"))
-            val doc = Jsoup.parse(html)
-
-            // 1. Try extracting structured ld+json
-            val ldJsonData = extractLdJson(html, cleanUrl, postId)
-            if (ldJsonData != null && ldJsonData.mediaList.isNotEmpty()) {
-                return@withContext Result.success(ldJsonData)
-            }
-
-            // 2. Try extracting OpenGraph metadata
-            val ogTitle = doc.select("meta[property=og:title]").attr("content")
-            val ogDesc = doc.select("meta[property=og:description]").attr("content")
-            val ogImage = doc.select("meta[property=og:image]").attr("content")
-            val ogVideo = doc.select("meta[property=og:video]").attr("content")
-
-            // Parse Author and Caption from og:title or og:description
-            // Formats: "Author (@username) on Instagram: 'Caption text...'" or "Author on Instagram: ..."
-            var author = "Instagram User"
-            var caption = ogDesc
-
-            if (ogTitle.isNotBlank()) {
-                val authorMatch = Pattern.compile("^(.*?)(?:\\s*\\(@[\\w.]+\\))?\\s*on Instagram").matcher(ogTitle)
-                if (authorMatch.find()) {
-                    author = authorMatch.group(1)?.trim() ?: author
-                }
-            }
-
-            if (caption.contains("on Instagram:")) {
-                caption = caption.substringAfter("on Instagram:").trim()
-                if (caption.startsWith("\"") && caption.endsWith("\"") && caption.length > 2) {
-                    caption = caption.substring(1, caption.length - 1)
-                }
-            }
-
-            val mediaList = mutableListOf<PostMedia>()
-
-            if (ogVideo.isNotBlank()) {
-                mediaList.add(
-                    PostMedia(
-                        url = ogVideo,
-                        type = MediaType.VIDEO,
-                        thumbnailUrl = ogImage.ifBlank { null },
-                        suggestedFileName = "ig_video_01.mp4"
-                    )
-                )
-            } else if (ogImage.isNotBlank()) {
-                mediaList.add(
-                    PostMedia(
-                        url = ogImage,
-                        type = MediaType.IMAGE,
-                        thumbnailUrl = ogImage,
-                        suggestedFileName = "ig_image_01.jpg"
-                    )
-                )
-            }
-
-            // 3. Scan script tags for carousel items
-            val scriptMedia = extractMediaFromEmbeddedScripts(html)
-            if (scriptMedia.isNotEmpty()) {
-                mediaList.clear()
-                mediaList.addAll(scriptMedia)
-            }
-
-            if (mediaList.isEmpty()) {
-                return@withContext Result.failure(
-                    Exception("Instagram 貼文受隱私權限保護或需要登入驗證。請使用「內嵌瀏覽器」功能登入後擷取。")
-                )
-            }
-
-            // Extract hashtags from caption
-            val hashtags = extractHashtags(caption)
-            val currentDate = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
-
-            val post = PostData(
-                id = postId,
-                platform = Platform.INSTAGRAM,
-                originalUrl = cleanUrl,
-                author = author,
-                authorAvatarUrl = null,
-                caption = caption,
-                publishedAt = currentDate,
-                mediaList = mediaList,
-                hashtags = hashtags
-            )
-
-            Result.success(post)
-        } catch (e: Exception) {
-            Result.failure(e)
+        } catch (_: Exception) {
+            null
         }
     }
 
+    private fun extractAllMediaFromHtml(html: String): List<PostMedia> {
+        val mediaList = mutableListOf<PostMedia>()
+        val seenUrls = mutableSetOf<String>()
+
+        // 1. Try finding edge_sidecar_to_children (Multi-image Carousel)
+        val sidecarIdx = html.indexOf("edge_sidecar_to_children")
+        if (sidecarIdx != -1) {
+            val chunk = html.substring(sidecarIdx, minOf(html.length, sidecarIdx + 300000))
+            val nodePattern = Pattern.compile("\\\\?[\"']node\\\\?[\"']\\s*:\\s*\\{")
+            val nodeChunks = nodePattern.split(chunk)
+            var itemIdx = 1
+
+            for (i in 1 until nodeChunks.size) {
+                val part = nodeChunks[i]
+                val isVideo = Pattern.compile("\\\\?[\"']is_video\\\\?[\"']\\s*:\\s*true").matcher(part).find()
+
+                val displayMatcher = Pattern.compile("\\\\?[\"']display_url\\\\?[\"']\\s*:\\s*\\\\?[\"']((?:\\\\\\\\.|[^\"'\\\\])+)\\\\?[\"']").matcher(part)
+                val displayUrl = if (displayMatcher.find()) {
+                    cleanJsonUrl(displayMatcher.group(1) ?: "")
+                } else null
+
+                val videoMatcher = Pattern.compile("\\\\?[\"']video_url\\\\?[\"']\\s*:\\s*\\\\?[\"']((?:\\\\\\\\.|[^\"'\\\\])+)\\\\?[\"']").matcher(part)
+                val videoUrl = if (isVideo && videoMatcher.find()) {
+                    cleanJsonUrl(videoMatcher.group(1) ?: "")
+                } else null
+
+                val finalUrl = if (isVideo && !videoUrl.isNullOrBlank()) videoUrl else displayUrl
+                if (!finalUrl.isNullOrBlank() && !seenUrls.contains(finalUrl)) {
+                    seenUrls.add(finalUrl)
+                    val type = if (isVideo && !videoUrl.isNullOrBlank()) MediaType.VIDEO else MediaType.IMAGE
+                    val ext = if (type == MediaType.VIDEO) "mp4" else "jpg"
+                    mediaList.add(
+                        PostMedia(
+                            url = finalUrl,
+                            type = type,
+                            thumbnailUrl = displayUrl,
+                            suggestedFileName = "ig_${if (type == MediaType.VIDEO) "video" else "image"}_${String.format(Locale.US, "%02d", itemIdx++)}.$ext"
+                        )
+                    )
+                }
+            }
+
+            if (mediaList.isNotEmpty()) {
+                return mediaList
+            }
+        }
+
+        // 2. Single post extraction (Reel or single image)
+        val isVideo = Pattern.compile("\\\\?[\"']is_video\\\\?[\"']\\s*:\\s*true").matcher(html).find()
+        val videoMatcher = Pattern.compile("\\\\?[\"']video_url\\\\?[\"']\\s*:\\s*\\\\?[\"']((?:\\\\\\\\.|[^\"'\\\\])+)\\\\?[\"']").matcher(html)
+        val displayMatcher = Pattern.compile("\\\\?[\"']display_url\\\\?[\"']\\s*:\\s*\\\\?[\"']((?:\\\\\\\\.|[^\"'\\\\])+)\\\\?[\"']").matcher(html)
+
+        if (isVideo && videoMatcher.find()) {
+            val videoUrl = cleanJsonUrl(videoMatcher.group(1) ?: "")
+            val displayUrl = if (displayMatcher.find()) cleanJsonUrl(displayMatcher.group(1) ?: "") else null
+            if (videoUrl.isNotBlank()) {
+                mediaList.add(
+                    PostMedia(
+                        url = videoUrl,
+                        type = MediaType.VIDEO,
+                        thumbnailUrl = displayUrl,
+                        suggestedFileName = "ig_video_01.mp4"
+                    )
+                )
+                return mediaList
+            }
+        } else if (displayMatcher.find()) {
+            val displayUrl = cleanJsonUrl(displayMatcher.group(1) ?: "")
+            if (displayUrl.isNotBlank()) {
+                mediaList.add(
+                    PostMedia(
+                        url = displayUrl,
+                        type = MediaType.IMAGE,
+                        thumbnailUrl = displayUrl,
+                        suggestedFileName = "ig_image_01.jpg"
+                    )
+                )
+                return mediaList
+            }
+        }
+
+        return mediaList
+    }
+
+    private fun extractMetadataFromEmbed(html: String): Triple<String?, String?, String?> {
+        var author: String? = null
+        var caption: String? = null
+        var avatarUrl: String? = null
+
+        try {
+            val doc = Jsoup.parse(html)
+            val usernameEl = doc.selectFirst(".UsernameText") ?: doc.selectFirst(".Username")
+            if (usernameEl != null && usernameEl.text().isNotBlank()) {
+                author = usernameEl.text().trim()
+            }
+
+            val avatarEl = doc.selectFirst(".Avatar img")
+            if (avatarEl != null && avatarEl.hasAttr("src")) {
+                avatarUrl = avatarEl.attr("src")
+            }
+
+            // Caption from JSON edge_media_to_caption
+            val capMatcher = Pattern.compile(
+                "\\\\?[\"']edge_media_to_caption\\\\?[\"']\\s*:\\s*\\{\\s*\\\\?[\"']edges\\\\?[\"']\\s*:\\s*\\[\\s*\\{\\s*\\\\?[\"']node\\\\?[\"']\\s*:\\s*\\{\\s*\\\\?[\"']text\\\\?[\"']\\s*:\\s*\\\\?[\"']((?:\\\\\\\\.|[^\"'\\\\])+)\\\\?[\"']"
+            ).matcher(html)
+            if (capMatcher.find()) {
+                val rawCap = capMatcher.group(1) ?: ""
+                caption = unescapeJsonString(rawCap)
+            } else {
+                val captionEl = doc.selectFirst(".Caption") ?: doc.selectFirst(".CaptionComments")
+                if (captionEl != null && captionEl.text().isNotBlank()) {
+                    caption = captionEl.text().trim()
+                }
+            }
+        } catch (_: Exception) {}
+
+        return Triple(author, caption, avatarUrl)
+    }
+
+    private fun cleanJsonUrl(raw: String): String {
+        return raw.replace("\\\\\\/", "/")
+            .replace("\\/", "/")
+            .replace("\\u0026", "&")
+            .replace("&amp;", "&")
+            .replace("\\u00253D", "%3D")
+    }
+
+    private fun unescapeJsonString(raw: String): String {
+        val replaced = raw.replace("\\\\n", "\n")
+            .replace("\\n", "\n")
+            .replace("\\\\r", "\r")
+            .replace("\\r", "\r")
+            .replace("\\\\t", "\t")
+            .replace("\\t", "\t")
+            .replace("\\\\\"", "\"")
+            .replace("\\\"", "\"")
+            .replace("\\\\\\/", "/")
+            .replace("\\/", "/")
+
+        // Replace unicode escapes \uXXXX
+        val unicodePattern = Pattern.compile("\\\\u([0-9a-fA-F]{4})")
+        val matcher = unicodePattern.matcher(replaced)
+        val sb = StringBuffer()
+        while (matcher.find()) {
+            val hex = matcher.group(1) ?: "0000"
+            val charCode = hex.toInt(16)
+            matcher.appendReplacement(sb, Matcher.quoteReplacement(charCode.toChar().toString()))
+        }
+        matcher.appendTail(sb)
+        return sb.toString()
+    }
+
     private fun normalizeInstagramUrl(url: String): String {
-        // Strip query params like ?utm_source=...
         val trimmed = url.trim()
         val matcher = Pattern.compile("https?://(?:www\\.)?instagram\\.com/(?:p|reel|reels|tv)/([a-zA-Z0-9_-]+)").matcher(trimmed)
         return if (matcher.find()) {
@@ -229,36 +421,8 @@ class InstagramExtractor(private val client: OkHttpClient) {
                     }
                 }
             }
-        } catch (_: Exception) {
-        }
+        } catch (_: Exception) {}
         return null
-    }
-
-    private fun extractMediaFromEmbeddedScripts(html: String): List<PostMedia> {
-        val result = mutableListOf<PostMedia>()
-        try {
-            // Regex match for display_url in edge_sidecar_to_children or similar structures
-            val displayUrlPattern = Pattern.compile("\"display_url\"\\s*:\\s*\"([^\"]+)\"")
-            val matcher = displayUrlPattern.matcher(html)
-            val seenUrls = mutableSetOf<String>()
-            var idx = 1
-            while (matcher.find()) {
-                val rawUrl = matcher.group(1)?.replace("\\u0026", "&") ?: continue
-                if (!seenUrls.contains(rawUrl)) {
-                    seenUrls.add(rawUrl)
-                    result.add(
-                        PostMedia(
-                            url = rawUrl,
-                            type = MediaType.IMAGE,
-                            thumbnailUrl = rawUrl,
-                            suggestedFileName = "ig_image_${String.format(Locale.US, "%02d", idx++)}.jpg"
-                        )
-                    )
-                }
-            }
-        } catch (_: Exception) {
-        }
-        return result
     }
 
     private fun extractHashtags(text: String): List<String> {
