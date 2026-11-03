@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Image
@@ -69,6 +70,7 @@ fun PostPreviewCard(
     onPackageZip: () -> Unit,
     onSaveToGallery: () -> Unit,
     onCopyCaption: () -> Unit,
+    onShareToAi: () -> Unit,
     onShareZip: (File) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -255,23 +257,42 @@ fun PostPreviewCard(
                     Text("複製文案", fontSize = 12.sp)
                 }
 
-                // If ZIP is ready, show Quick Share
-                if (lastZipFile != null && lastZipFile.exists()) {
-                    Button(
-                        onClick = { onShareZip(lastZipFile) },
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.tertiary
-                        )
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Share,
-                            contentDescription = "Share ZIP",
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("分享 ZIP", fontSize = 12.sp)
-                    }
+                // Share to Gemini / AI
+                FilledTonalButton(
+                    onClick = onShareToAi,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AutoAwesome,
+                        contentDescription = "Share to Gemini",
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("分享至 Gemini", fontSize = 12.sp, maxLines = 1)
+                }
+            }
+
+            // Row 3: Quick Share ZIP (if package has been generated)
+            if (lastZipFile != null && lastZipFile.exists()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Button(
+                    onClick = { onShareZip(lastZipFile) },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.tertiary
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Share,
+                        contentDescription = "Share ZIP",
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("分享 ZIP 壓縮檔 (至雲端/LINE/郵件)", fontSize = 12.sp)
                 }
             }
         }

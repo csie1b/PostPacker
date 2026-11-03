@@ -233,6 +233,41 @@ class MainViewModel : ViewModel() {
         }
     }
 
+    fun sharePostToAi(context: Context) {
+        val post = _currentPost.value ?: return
+        val textToShare = buildString {
+            append("請幫我分析、摘要或改寫以下社群貼文：\n\n")
+            append("【作者】: ${post.author}\n")
+            if (post.publishedAt.isNotBlank()) {
+                append("【發布時間】: ${post.publishedAt}\n")
+            }
+            append("【原文網址】: ${post.originalUrl}\n\n")
+            if (post.caption.isNotBlank()) {
+                append("【貼文文案內容】:\n${post.caption}\n\n")
+            }
+            if (post.hashtags.isNotEmpty()) {
+                append("【主題標籤】: ${post.hashtags.joinToString(" ") { "#$it" }}\n\n")
+            }
+            append("【多媒體檔案】: 共有 ${post.mediaList.size} 個照片/影片")
+        }
+
+        try {
+            val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, textToShare)
+                putExtra(Intent.EXTRA_SUBJECT, "貼文內容分析 - ${post.author}")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            val chooser = Intent.createChooser(sendIntent, "分享貼文內容至 Gemini / AI 或其他 App")
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(chooser)
+        } catch (e: Exception) {
+            viewModelScope.launch {
+                _toastEvent.emit("無法開啟分享: ${e.message}")
+            }
+        }
+    }
+
     fun openZipFile(context: Context, zipFile: File) {
         if (!zipFile.exists()) {
             viewModelScope.launch {

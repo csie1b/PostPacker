@@ -267,6 +267,7 @@ fun HomeScreen(
                     onPackageZip = { viewModel.packageToZip(context) },
                     onSaveToGallery = { viewModel.saveToGallery(context) },
                     onCopyCaption = { viewModel.copyCaption(context) },
+                    onShareToAi = { viewModel.sharePostToAi(context) },
                     onShareZip = { file -> viewModel.shareZipFile(context, file) }
                 )
                 Spacer(modifier = Modifier.height(16.dp))
