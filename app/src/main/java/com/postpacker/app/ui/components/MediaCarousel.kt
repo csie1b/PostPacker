@@ -1,5 +1,6 @@
 package com.postpacker.app.ui.components
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -14,7 +15,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -31,6 +31,7 @@ import coil.request.ImageRequest
 import com.postpacker.app.model.MediaType
 import com.postpacker.app.model.PostMedia
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MediaCarousel(
     mediaList: List<PostMedia>,

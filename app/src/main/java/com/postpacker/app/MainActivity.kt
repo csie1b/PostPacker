@@ -44,14 +44,12 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             PostPackerTheme {
+                LaunchedEffect(Unit) {
+                    viewModel.toastEvent.collectLatest { message ->
+                        Toast.makeText(this@MainActivity, message, Toast.LENGTH_SHORT).show()
+                    }
+                }
                 MainAppScaffold(viewModel = viewModel)
-            }
-        }
-
-        // Observe toast events
-        lifecycleScopeLaunch {
-            viewModel.toastEvent.collectLatest { message ->
-                Toast.makeText(this@MainActivity, message, Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -69,12 +67,6 @@ class MainActivity : ComponentActivity() {
             if (!sharedText.isNullOrBlank()) {
                 viewModel.handleIncomingShare(sharedText)
             }
-        }
-    }
-
-    private fun lifecycleScopeLaunch(block: suspend () -> Unit) {
-        androidx.lifecycle.lifecycleScope.launchWhenStarted {
-            block()
         }
     }
 }
