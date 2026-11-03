@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PostPacker</string>
+    <string name="app_subtitle">社群貼文打包神器 (IG / FB)</string>
+    <string name="input_hint">貼上 Instagram 或 Facebook 貼文連結...</string>
+    <string name="paste_button">貼上連結</string>
+    <string name="clear_button">清除</string>
+    <string name="extract_button">解析貼文</string>
+    <string name="package_zip">📦 打包成 ZIP</string>
+    <string name="save_gallery">🖼️ 存入手機相簿</string>
+    <string name="copy_caption">📋 複製文案</string>
+    <string name="share_zip">📤 分享壓縮檔</string>
+    <string name="browser_helper">🌐 登入 / 內嵌輔助擷取</string>
+</resources>
