@@ -152,7 +152,7 @@ class MainViewModel : ViewModel() {
             result.onSuccess { zipFile ->
                 _lastPackagedZip.value = zipFile
                 _isPackaging.value = false
-                _toastEvent.emit("✅ 貼文打包成功！已儲存 ZIP 檔")
+                _toastEvent.emit("🎉 貼文打包成功！已儲存至「下載 (Download/PostPacker)」資料夾")
 
                 // Add to history
                 val archive = PackagedArchive(

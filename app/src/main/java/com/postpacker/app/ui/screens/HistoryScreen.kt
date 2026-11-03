@@ -101,6 +101,26 @@ fun HistoryScreen(
                 }
             }
         } else {
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "📁 所有 ZIP 已自動同步備份至手機「下載」目錄中的 Download/PostPacker 資料夾",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        lineHeight = 15.sp
+                    )
+                }
+            }
+
             LazyColumn(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.fillMaxSize()

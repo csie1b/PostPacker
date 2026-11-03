@@ -1,6 +1,10 @@
 package com.postpacker.app.packager
 
+import android.content.ContentValues
 import android.content.Context
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import com.google.gson.GsonBuilder
 import com.postpacker.app.extractor.CookieHelper
 import com.postpacker.app.model.MediaType
@@ -133,9 +137,49 @@ class ZipPackager(private val context: Context) {
             // Cleanup temp dir
             tempDir.deleteRecursively()
 
+            // 7. Automatically save a copy to the public Downloads folder (Download/PostPacker)
+            saveToPublicDownloads(zipFile)
+
             Result.success(zipFile)
         } catch (e: Exception) {
             Result.failure(e)
+        }
+    }
+
+    private fun saveToPublicDownloads(zipFile: File) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val resolver = context.contentResolver
+                val contentValues = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, zipFile.name)
+                    put(MediaStore.MediaColumns.MIME_TYPE, "application/zip")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/PostPacker")
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+                val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+                if (uri != null) {
+                    resolver.openOutputStream(uri)?.use { out ->
+                        FileInputStream(zipFile).use { input ->
+                            input.copyTo(out)
+                        }
+                    }
+                    contentValues.clear()
+                    contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                    resolver.update(uri, contentValues, null, null)
+                }
+            } else {
+                val downloadDir = File(
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                    "PostPacker"
+                )
+                if (!downloadDir.exists()) {
+                    downloadDir.mkdirs()
+                }
+                val destFile = File(downloadDir, zipFile.name)
+                zipFile.copyTo(destFile, overwrite = true)
+            }
+        } catch (_: Exception) {
+            // Keep internal copy intact if external write encounters device-specific quirks
         }
     }
 
