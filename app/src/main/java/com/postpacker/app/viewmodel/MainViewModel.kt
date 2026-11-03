@@ -10,8 +10,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import com.postpacker.app.extractor.CookieHelper
 import com.postpacker.app.extractor.PostExtractorFacade
 import com.postpacker.app.model.PackagedArchive
+import com.postpacker.app.model.Platform
 import com.postpacker.app.model.PostData
 import com.postpacker.app.packager.MediaGallerySaver
 import com.postpacker.app.packager.ZipPackager
@@ -59,6 +61,12 @@ class MainViewModel : ViewModel() {
     private val _browserUrl = MutableStateFlow("")
     val browserUrl: StateFlow<String> = _browserUrl.asStateFlow()
 
+    private val _isIgLoggedIn = MutableStateFlow(false)
+    val isIgLoggedIn: StateFlow<Boolean> = _isIgLoggedIn.asStateFlow()
+
+    private val _isFbLoggedIn = MutableStateFlow(false)
+    val isFbLoggedIn: StateFlow<Boolean> = _isFbLoggedIn.asStateFlow()
+
     private val _toastEvent = MutableSharedFlow<String>()
     val toastEvent: SharedFlow<String> = _toastEvent.asSharedFlow()
 
@@ -66,6 +74,34 @@ class MainViewModel : ViewModel() {
         _urlInput.value = newUrl
         if (_extractionError.value != null) {
             _extractionError.value = null
+        }
+    }
+
+    fun refreshLoginStatus() {
+        _isIgLoggedIn.value = CookieHelper.isInstagramLoggedIn()
+        _isFbLoggedIn.value = CookieHelper.isFacebookLoggedIn()
+    }
+
+    fun clearCookies() {
+        CookieHelper.clearAllCookies {
+            refreshLoginStatus()
+            viewModelScope.launch {
+                _toastEvent.emit("已清除所有瀏覽器 Cookie 與登入紀錄")
+            }
+        }
+    }
+
+    fun openLoginFor(platform: Platform) {
+        when (platform) {
+            Platform.INSTAGRAM -> {
+                _browserUrl.value = "https://www.instagram.com/accounts/login/"
+                _showBrowserDialog.value = true
+            }
+            Platform.FACEBOOK -> {
+                _browserUrl.value = "https://m.facebook.com/login/"
+                _showBrowserDialog.value = true
+            }
+            Platform.UNKNOWN -> openBrowserHelper()
         }
     }
 
@@ -210,12 +246,14 @@ class MainViewModel : ViewModel() {
 
     fun closeBrowserHelper() {
         _showBrowserDialog.value = false
+        refreshLoginStatus()
     }
 
     fun onBrowserExtracted(post: PostData) {
         _showBrowserDialog.value = false
         _currentPost.value = post
         _urlInput.value = post.originalUrl
+        refreshLoginStatus()
     }
 
     fun deleteHistoryItem(context: Context, archive: PackagedArchive) {
@@ -228,6 +266,7 @@ class MainViewModel : ViewModel() {
     }
 
     fun loadHistory(context: Context) {
+        refreshLoginStatus()
         try {
             val prefs = context.getSharedPreferences("postpacker_prefs", Context.MODE_PRIVATE)
             val json = prefs.getString("history_json", null) ?: return

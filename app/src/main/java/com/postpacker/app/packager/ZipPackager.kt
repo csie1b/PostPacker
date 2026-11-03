@@ -2,6 +2,7 @@ package com.postpacker.app.packager
 
 import android.content.Context
 import com.google.gson.GsonBuilder
+import com.postpacker.app.extractor.CookieHelper
 import com.postpacker.app.model.MediaType
 import com.postpacker.app.model.PostData
 import kotlinx.coroutines.Dispatchers
@@ -139,12 +140,18 @@ class ZipPackager(private val context: Context) {
     }
 
     private fun downloadFile(url: String, destination: File) {
-        val request = Request.Builder()
+        val reqBuilder = Request.Builder()
             .url(url)
-            .header("User-Agent", "Mozilla/5.0")
-            .build()
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+            .header("Referer", if (url.contains("fbcdn") || url.contains("facebook")) "https://www.facebook.com/" else "https://www.instagram.com/")
 
-        client.newCall(request).execute().use { response ->
+        // Attach cookies if available
+        val cookie = CookieHelper.getCookies(url)
+        if (!cookie.isNullOrBlank()) {
+            reqBuilder.header("Cookie", cookie)
+        }
+
+        client.newCall(reqBuilder.build()).execute().use { response ->
             if (!response.isSuccessful) {
                 throw Exception("Failed to download media: HTTP ${response.code}")
             }

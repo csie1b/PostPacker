@@ -33,10 +33,13 @@ class PostExtractorFacade {
 
     suspend fun extractFromUrl(url: String, cookieHeader: String? = null): Result<PostData> {
         val platform = Platform.fromUrl(url)
+        // Automatically inject saved browser session cookies if none explicitly supplied
+        val effectiveCookie = cookieHeader ?: CookieHelper.getCookies(url)
+
         return when (platform) {
-            Platform.INSTAGRAM -> instagramExtractor.extract(url, cookieHeader)
-            Platform.FACEBOOK -> facebookExtractor.extract(url, cookieHeader)
-            Platform.UNKNOWN -> extractGenericOpenGraph(url, cookieHeader)
+            Platform.INSTAGRAM -> instagramExtractor.extract(url, effectiveCookie)
+            Platform.FACEBOOK -> facebookExtractor.extract(url, effectiveCookie)
+            Platform.UNKNOWN -> extractGenericOpenGraph(url, effectiveCookie)
         }
     }
 

@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import com.postpacker.app.extractor.CookieHelper
 import com.postpacker.app.model.MediaType
 import com.postpacker.app.model.PostData
 import kotlinx.coroutines.Dispatchers
@@ -14,7 +15,6 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.InputStream
 import java.io.OutputStream
-import java.util.Locale
 
 class MediaGallerySaver(private val context: Context) {
 
@@ -87,9 +87,18 @@ class MediaGallerySaver(private val context: Context) {
     }
 
     private fun downloadToUri(url: String, uri: Uri): Boolean {
-        val request = Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build()
+        val reqBuilder = Request.Builder()
+            .url(url)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+            .header("Referer", if (url.contains("fbcdn") || url.contains("facebook")) "https://www.facebook.com/" else "https://www.instagram.com/")
+
+        val cookie = CookieHelper.getCookies(url)
+        if (!cookie.isNullOrBlank()) {
+            reqBuilder.header("Cookie", cookie)
+        }
+
         return try {
-            client.newCall(request).execute().use { response ->
+            client.newCall(reqBuilder.build()).execute().use { response ->
                 if (!response.isSuccessful) return false
                 val inStream: InputStream? = response.body?.byteStream()
                 val outStream: OutputStream? = context.contentResolver.openOutputStream(uri)
