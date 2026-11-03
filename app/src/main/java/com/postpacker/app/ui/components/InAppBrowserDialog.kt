@@ -2,24 +2,35 @@ package com.postpacker.app.ui.components
 
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -64,6 +75,8 @@ fun InAppBrowserDialog(
     var pageTitle by remember { mutableStateOf("載入中...") }
     var loadProgress by remember { mutableFloatStateOf(0f) }
     var currentUrl by remember { mutableStateOf(initialUrl) }
+    var capturedVideoUrls by remember { mutableStateOf<List<String>>(emptyList()) }
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -111,7 +124,7 @@ fun InAppBrowserDialog(
                     // Extract button
                     Button(
                         onClick = {
-                            injectExtractionScript(webViewInstance) { post ->
+                            injectExtractionScript(webViewInstance, capturedVideoUrls) { post ->
                                 onExtracted(post)
                             }
                         },
@@ -131,6 +144,36 @@ fun InAppBrowserDialog(
                             .fillMaxWidth()
                             .height(2.dp)
                     )
+                }
+
+                // Video stream captured notification banner
+                if (capturedVideoUrls.isNotEmpty()) {
+                    Surface(
+                        color = Color(0xFF2E7D32).copy(alpha = 0.15f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 4.dp),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = Color(0xFF2E7D32),
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "🎥 已成功捕捉到 ${capturedVideoUrls.size} 個高畫質影片串流！點擊「擷取貼文」即可打包影片",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF2E7D32)
+                            )
+                        }
+                    }
                 }
 
                 // Helpful tip banner for login pages
@@ -191,6 +234,32 @@ fun InAppBrowserDialog(
 
                                     override fun onPageFinished(view: WebView?, url: String?) {
                                         url?.let { currentUrl = it }
+                                        // Attempt to play videos to trigger network request buffering
+                                        view?.evaluateJavascript("""
+                                            (function() {
+                                                var vids = document.querySelectorAll('video');
+                                                vids.forEach(function(v) {
+                                                    v.muted = true;
+                                                    v.play().catch(function(){});
+                                                });
+                                            })();
+                                        """.trimIndent(), null)
+                                    }
+
+                                    override fun shouldInterceptRequest(
+                                        view: WebView?,
+                                        request: WebResourceRequest?
+                                    ): WebResourceResponse? {
+                                        val reqUrl = request?.url?.toString()
+                                        if (reqUrl != null && isVideoStreamUrl(reqUrl)) {
+                                            val clean = cleanVideoUrl(reqUrl)
+                                            mainHandler.post {
+                                                if (!capturedVideoUrls.contains(clean)) {
+                                                    capturedVideoUrls = capturedVideoUrls + clean
+                                                }
+                                            }
+                                        }
+                                        return super.shouldInterceptRequest(view, request)
                                     }
                                 }
 
@@ -220,13 +289,16 @@ private class JsExtractorBridge(private val onResult: (PostData) -> Unit) {
             val gson = Gson()
             val raw = gson.fromJson(jsonString, RawExtractedData::class.java)
 
+            val prefix = if (raw.url.contains("facebook.com")) "fb" else "ig"
             val mediaList = raw.mediaUrls.mapIndexed { idx, url ->
                 val isVideo = raw.mediaTypes.getOrNull(idx) == "video"
+                val ext = if (isVideo) "mp4" else "jpg"
+                val typeName = if (isVideo) "video" else "image"
                 PostMedia(
                     url = url,
                     type = if (isVideo) MediaType.VIDEO else MediaType.IMAGE,
                     thumbnailUrl = url,
-                    suggestedFileName = if (isVideo) "video_${idx + 1}.mp4" else "image_${idx + 1}.jpg"
+                    suggestedFileName = "${prefix}_${typeName}_${String.format(Locale.US, "%02d", idx + 1)}.$ext"
                 )
             }
 
@@ -252,9 +324,15 @@ private class JsExtractorBridge(private val onResult: (PostData) -> Unit) {
     )
 }
 
-private fun injectExtractionScript(webView: WebView?, onExtracted: (PostData) -> Unit) {
+private fun injectExtractionScript(
+    webView: WebView?,
+    capturedVideos: List<String>,
+    onExtracted: (PostData) -> Unit
+) {
+    val capturedJson = Gson().toJson(capturedVideos)
     val js = """
         (function() {
+            var capturedFromNet = $capturedJson;
             var mediaUrls = [];
             var mediaTypes = [];
 
@@ -264,7 +342,18 @@ private fun injectExtractionScript(webView: WebView?, onExtracted: (PostData) ->
                 return u.replace(/\\\\\\//g, '/').replace(/\\\//g, '/').replace(/\\\\u0026/g, '&').replace(/\\u0026/g, '&');
             };
 
-            // 0. Scan for Instagram Carousel sidecar in HTML/scripts
+            // 0. Prepend captured network video streams (Reels & Videos)
+            if (capturedFromNet && capturedFromNet.length > 0) {
+                for (var i = 0; i < capturedFromNet.length; i++) {
+                    var vUrl = capturedFromNet[i];
+                    if (!mediaUrls.includes(vUrl)) {
+                        mediaUrls.push(vUrl);
+                        mediaTypes.push('video');
+                    }
+                }
+            }
+
+            // 1. Scan for Instagram Carousel sidecar in HTML/scripts
             try {
                 var htmlStr = document.documentElement.innerHTML;
                 var sidecarIdx = htmlStr.indexOf('edge_sidecar_to_children');
@@ -285,7 +374,7 @@ private fun injectExtractionScript(webView: WebView?, onExtracted: (PostData) ->
                 }
             } catch (err) {}
             
-            // 1. Scan videos
+            // 2. Scan videos
             var videos = document.querySelectorAll('video');
             videos.forEach(function(v) {
                 var src = v.currentSrc || v.src;
@@ -293,29 +382,34 @@ private fun injectExtractionScript(webView: WebView?, onExtracted: (PostData) ->
                     var s = v.querySelector('source');
                     if (s) src = s.src;
                 }
-                if (src && !mediaUrls.includes(src)) {
+                if (src && !src.startsWith('blob:') && !mediaUrls.includes(src)) {
                     mediaUrls.push(src);
                     mediaTypes.push('video');
                 }
             });
 
-            // 2. Scan images
-            var imgs = document.querySelectorAll('article img, div[role="presentation"] img, img[srcset]');
-            imgs.forEach(function(img) {
-                var src = img.src;
-                // Parse srcset to get highest resolution
-                if (img.srcset) {
-                    var parts = img.srcset.split(',');
-                    var best = parts[parts.length - 1].trim().split(' ')[0];
-                    if (best) src = best;
-                }
-                if (src && !src.includes('profile') && !src.includes('avatar') && !mediaUrls.includes(src)) {
-                    mediaUrls.push(src);
-                    mediaTypes.push('image');
-                }
-            });
+            // 3. Scan images (if Reel and we already captured the video, omit static thumbnail image)
+            var isReelPage = window.location.href.indexOf('/reel/') !== -1 || window.location.href.indexOf('/reels/') !== -1;
+            var hasVideoAlready = mediaTypes.some(function(t) { return t === 'video'; });
 
-            // 3. Caption & Author
+            if (!isReelPage || !hasVideoAlready) {
+                var imgs = document.querySelectorAll('article img, div[role="presentation"] img, img[srcset]');
+                imgs.forEach(function(img) {
+                    var src = img.src;
+                    // Parse srcset to get highest resolution
+                    if (img.srcset) {
+                        var parts = img.srcset.split(',');
+                        var best = parts[parts.length - 1].trim().split(' ')[0];
+                        if (best) src = best;
+                    }
+                    if (src && !src.includes('profile') && !src.includes('avatar') && !mediaUrls.includes(src)) {
+                        mediaUrls.push(src);
+                        mediaTypes.push('image');
+                    }
+                });
+            }
+
+            // 4. Caption & Author
             var author = "";
             var caption = "";
             var title = document.title;
@@ -349,4 +443,32 @@ private fun injectExtractionScript(webView: WebView?, onExtracted: (PostData) ->
     """.trimIndent()
 
     webView?.evaluateJavascript(js, null)
+}
+
+private fun isVideoStreamUrl(url: String): Boolean {
+    val lower = url.lowercase(Locale.ROOT)
+    if (lower.contains(".m3u8")) return false
+    if (lower.contains(".mp4")) return true
+    if ((lower.contains("cdninstagram.com") || lower.contains("fbcdn.net")) &&
+        (lower.contains("/t50.") || lower.contains("/t16.") || lower.contains("/v/t50") || lower.contains("/v/t16") || lower.contains("/o1/v/"))
+    ) return true
+    return false
+}
+
+private fun cleanVideoUrl(url: String): String {
+    return try {
+        val uri = Uri.parse(url)
+        val builder = uri.buildUpon().clearQuery()
+        for (paramName in uri.queryParameterNames) {
+            if (paramName != "bytestart" && paramName != "byteend") {
+                for (paramValue in uri.getQueryParameters(paramName)) {
+                    builder.appendQueryParameter(paramName, paramValue)
+                }
+            }
+        }
+        builder.build().toString()
+    } catch (_: Exception) {
+        url.replace(Regex("[?&]bytestart=\\d+"), "")
+            .replace(Regex("[?&]byteend=\\d+"), "")
+    }
 }

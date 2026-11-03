@@ -24,6 +24,16 @@ class InstagramExtractor(private val client: OkHttpClient) {
         try {
             val cleanUrl = normalizeInstagramUrl(rawUrl)
             val postId = extractPostId(cleanUrl) ?: extractPostId(rawUrl) ?: "ig_${System.currentTimeMillis()}"
+            val isReelOrVideo = rawUrl.contains("/reel/") || rawUrl.contains("/tv/") || cleanUrl.contains("/reel/") || cleanUrl.contains("/tv/")
+
+            // 1. If cookies are available (user logged in), query Instagram's official media info endpoint directly
+            // This returns the genuine 1080p/720p MP4 stream for Reels and full carousel items!
+            if (!cookieHeader.isNullOrBlank()) {
+                val mediaInfoPost = fetchMediaInfo(postId, cleanUrl, cookieHeader)
+                if (mediaInfoPost != null && mediaInfoPost.mediaList.isNotEmpty()) {
+                    return@withContext Result.success(mediaInfoPost)
+                }
+            }
 
             var finalAuthor = "Instagram User"
             var finalCaption = ""
@@ -31,10 +41,17 @@ class InstagramExtractor(private val client: OkHttpClient) {
             var finalDate = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
             val finalMediaList = mutableListOf<PostMedia>()
 
-            // 1. Fetch Instagram embed endpoint
-            // Instagram embed pages render server-side JSON with complete edge_sidecar_to_children (all carousel photos & videos) without requiring cookies/login!
-            val embedUrl = "https://www.instagram.com/p/$postId/embed/captioned/"
-            val embedHtml = fetchHtml(embedUrl, null)
+            // 2. Fetch Instagram embed endpoint
+            // Instagram embed pages render server-side JSON with complete edge_sidecar_to_children (for carousel photos & videos)
+            val embedUrl = if (isReelOrVideo) {
+                "https://www.instagram.com/reel/$postId/embed/captioned/"
+            } else {
+                "https://www.instagram.com/p/$postId/embed/captioned/"
+            }
+            var embedHtml = fetchHtml(embedUrl, null)
+            if (embedHtml.isNullOrBlank() && isReelOrVideo) {
+                embedHtml = fetchHtml("https://www.instagram.com/p/$postId/embed/captioned/", null)
+            }
 
             if (!embedHtml.isNullOrBlank()) {
                 val embedMedia = extractAllMediaFromHtml(embedHtml)
@@ -48,7 +65,7 @@ class InstagramExtractor(private val client: OkHttpClient) {
                 if (!embedAvatar.isNullOrBlank()) finalAvatar = embedAvatar
             }
 
-            // 2. Fetch direct post page to enrich metadata (e.g. published timestamp) or handle private posts
+            // 3. Fetch direct post page to enrich metadata or check OpenGraph tags
             val directHtml = fetchHtml(cleanUrl, cookieHeader)
             if (!directHtml.isNullOrBlank()) {
                 val doc = Jsoup.parse(directHtml)
@@ -66,7 +83,9 @@ class InstagramExtractor(private val client: OkHttpClient) {
                         finalDate = ldJsonData.publishedAt
                     }
                     if (finalMediaList.isEmpty() && ldJsonData.mediaList.isNotEmpty()) {
-                        finalMediaList.addAll(ldJsonData.mediaList)
+                        if (!isReelOrVideo || ldJsonData.mediaList.any { it.type == MediaType.VIDEO }) {
+                            finalMediaList.addAll(ldJsonData.mediaList)
+                        }
                     }
                 }
 
@@ -94,7 +113,7 @@ class InstagramExtractor(private val client: OkHttpClient) {
                     finalCaption = cap
                 }
 
-                // If direct HTML contains sidecar (e.g. logged-in user viewing private carousel)
+                // If direct HTML contains sidecar
                 val directMedia = extractAllMediaFromHtml(directHtml)
                 if (directMedia.size > finalMediaList.size) {
                     finalMediaList.clear()
@@ -109,7 +128,8 @@ class InstagramExtractor(private val client: OkHttpClient) {
                                 suggestedFileName = "ig_video_01.mp4"
                             )
                         )
-                    } else if (ogImage.isNotBlank()) {
+                    } else if (ogImage.isNotBlank() && !isReelOrVideo) {
+                        // Only add ogImage as post media if this is NOT a Reel
                         finalMediaList.add(
                             PostMedia(
                                 url = ogImage,
@@ -122,9 +142,26 @@ class InstagramExtractor(private val client: OkHttpClient) {
                 }
             }
 
+            // 4. Check if post is a Reel/Video but we only obtained an image or no video
+            val hasVideo = finalMediaList.any { it.type == MediaType.VIDEO }
+            if (isReelOrVideo) {
+                if (!hasVideo) {
+                    return@withContext Result.failure(
+                        Exception("此貼文為 Instagram Reel 短影音。Meta 限制匿名直接下載影片串流，請先在上方點擊「登入 IG」或點選「網頁瀏覽器輔助擷取」，播放後即可下載高畫質 MP4 影片！")
+                    )
+                } else {
+                    // For Reels, ensure the video is the primary media and strip any thumbnail that was added as an image
+                    val videosOnly = finalMediaList.filter { it.type == MediaType.VIDEO }
+                    if (videosOnly.isNotEmpty()) {
+                        finalMediaList.clear()
+                        finalMediaList.addAll(videosOnly)
+                    }
+                }
+            }
+
             if (finalMediaList.isEmpty()) {
                 return@withContext Result.failure(
-                    Exception("Instagram 貼文受隱私權限保護或需要登入驗證。請點擊「網頁瀏覽器輔助擷取」登入後重試。")
+                    Exception("Instagram 貼文受隱私權限保護或需要登入驗證。請先在上方登入 IG 或使用「網頁瀏覽器輔助擷取」。")
                 )
             }
 
@@ -146,6 +183,130 @@ class InstagramExtractor(private val client: OkHttpClient) {
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    private fun fetchMediaInfo(postId: String, originalUrl: String, cookieHeader: String): PostData? {
+        return try {
+            val mediaId = shortcodeToMediaId(postId)
+            val url = "https://www.instagram.com/api/v1/media/$mediaId/info/"
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", userAgent)
+                .header("X-IG-App-ID", "936619743392459")
+                .header("Accept", "*/*")
+                .header("Cookie", cookieHeader)
+                .build()
+
+            val response = client.newCall(request).execute()
+            if (!response.isSuccessful) return null
+            val body = response.body?.string() ?: return null
+            val json = JsonParser.parseString(body).asJsonObject
+            val items = json.getAsJsonArray("items")
+            if (items == null || items.size() == 0) return null
+            val item = items[0].asJsonObject
+
+            val userObj = item.getAsJsonObject("user")
+            val author = userObj?.get("username")?.asString ?: "Instagram User"
+            val avatarUrl = userObj?.get("profile_pic_url")?.asString
+
+            val captionObj = item.getAsJsonObject("caption")
+            val caption = captionObj?.get("text")?.asString ?: ""
+
+            val mediaTypeInt = item.get("media_type")?.asInt ?: 1
+            val mediaList = mutableListOf<PostMedia>()
+
+            // 1. Carousel (media_type = 8)
+            if (mediaTypeInt == 8 && item.has("carousel_media")) {
+                val carMedia = item.getAsJsonArray("carousel_media")
+                carMedia.forEachIndexed { idx, element ->
+                    val cItem = element.asJsonObject
+                    val isVideo = cItem.get("media_type")?.asInt == 2
+                    val thumbUrl = cItem.getAsJsonObject("image_versions2")
+                        ?.getAsJsonArray("candidates")?.get(0)?.asJsonObject?.get("url")?.asString
+
+                    if (isVideo && cItem.has("video_versions")) {
+                        val videoUrl = cItem.getAsJsonArray("video_versions")?.get(0)?.asJsonObject?.get("url")?.asString
+                        if (!videoUrl.isNullOrBlank()) {
+                            mediaList.add(
+                                PostMedia(
+                                    url = videoUrl,
+                                    type = MediaType.VIDEO,
+                                    thumbnailUrl = thumbUrl,
+                                    suggestedFileName = "ig_video_${String.format(Locale.US, "%02d", idx + 1)}.mp4"
+                                )
+                            )
+                        }
+                    } else if (thumbUrl != null) {
+                        mediaList.add(
+                            PostMedia(
+                                url = thumbUrl,
+                                type = MediaType.IMAGE,
+                                thumbnailUrl = thumbUrl,
+                                suggestedFileName = "ig_image_${String.format(Locale.US, "%02d", idx + 1)}.jpg"
+                            )
+                        )
+                    }
+                }
+            } else if (mediaTypeInt == 2 && item.has("video_versions")) {
+                // 2. Video / Reel (media_type = 2)
+                val videoUrl = item.getAsJsonArray("video_versions")?.get(0)?.asJsonObject?.get("url")?.asString
+                val thumbUrl = item.getAsJsonObject("image_versions2")
+                    ?.getAsJsonArray("candidates")?.get(0)?.asJsonObject?.get("url")?.asString
+                if (!videoUrl.isNullOrBlank()) {
+                    mediaList.add(
+                        PostMedia(
+                            url = videoUrl,
+                            type = MediaType.VIDEO,
+                            thumbnailUrl = thumbUrl,
+                            suggestedFileName = "ig_video_01.mp4"
+                        )
+                    )
+                }
+            } else {
+                // 3. Single Image (media_type = 1)
+                val thumbUrl = item.getAsJsonObject("image_versions2")
+                    ?.getAsJsonArray("candidates")?.get(0)?.asJsonObject?.get("url")?.asString
+                if (!thumbUrl.isNullOrBlank()) {
+                    mediaList.add(
+                        PostMedia(
+                            url = thumbUrl,
+                            type = MediaType.IMAGE,
+                            thumbnailUrl = thumbUrl,
+                            suggestedFileName = "ig_image_01.jpg"
+                        )
+                    )
+                }
+            }
+
+            if (mediaList.isNotEmpty()) {
+                PostData(
+                    id = postId,
+                    platform = Platform.INSTAGRAM,
+                    originalUrl = originalUrl,
+                    author = author,
+                    authorAvatarUrl = avatarUrl,
+                    caption = caption,
+                    publishedAt = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date()),
+                    mediaList = mediaList,
+                    hashtags = extractHashtags(caption)
+                )
+            } else null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun shortcodeToMediaId(code: String): String {
+        val alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+        var id = java.math.BigInteger.ZERO
+        val base = java.math.BigInteger.valueOf(64)
+        for (char in code) {
+            val index = alphabet.indexOf(char)
+            if (index >= 0) {
+                id = id.multiply(base).add(java.math.BigInteger.valueOf(index.toLong()))
+            }
+        }
+        return id.toString()
     }
 
     private fun fetchHtml(url: String, cookieHeader: String?): String? {
@@ -331,7 +492,7 @@ class InstagramExtractor(private val client: OkHttpClient) {
         val matcher = Pattern.compile("https?://(?:www\\.)?instagram\\.com/(?:p|reel|reels|tv)/([a-zA-Z0-9_-]+)").matcher(trimmed)
         return if (matcher.find()) {
             val code = matcher.group(1)
-            val type = if (trimmed.contains("/reel/")) "reel" else "p"
+            val type = if (trimmed.contains("/reel/") || trimmed.contains("/reels/")) "reel" else "p"
             "https://www.instagram.com/$type/$code/"
         } else {
             trimmed.substringBefore("?")
